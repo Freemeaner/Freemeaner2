@@ -1,12 +1,14 @@
 /**
  * 프리미너 무료 진단 결과 자동 발송
- * Netlify Function · send-report.js (고정 텍스트 버전)
+ * Netlify Function · send-report.js (Gmail SMTP 버전)
  *
- * 필요한 환경변수:
- *   SENDGRID_API_KEY  — SendGrid API 키
- *   FROM_EMAIL        — 발신 이메일 (SendGrid에서 인증한 주소)
- *   FROM_NAME         — 발신자 이름 (예: 프리미너 FreeMeaner)
+ * 필요한 환경변수 (Netlify > Site Settings > Environment Variables):
+ *   GMAIL_USER  — Gmail 주소 (예: freemeaner@gmail.com)
+ *   GMAIL_PASS  — Gmail 앱 비밀번호 (16자리)
+ *   FROM_NAME   — 발신자 이름 (예: 프리미너 FreeMeaner)
  */
+
+const nodemailer = require('nodemailer');
 
 const DOMAIN_LABELS = ['일 구조', '수입 구조', '건강 구조', '관계 구조', '의미 구조'];
 
@@ -15,7 +17,6 @@ const TYPE_MESSAGES = {
   A: {
     name: '소진형 연소자',
     headline: '지금 가장 열심히 살고 있지만, 그 열심이 삶을 갉아먹고 있습니다.',
-    strong: null,
     body: '열심히가 아닌 올바른 방향이 필요한 시점입니다. 5대 영역 중 4개가 동시에 취약한 상태는 노력의 문제가 아니라 구조의 문제입니다. 지금 당장 가장 취약한 영역 하나에만 집중해보세요. 작은 구조 하나가 전체를 바꿉니다.',
     action: '오늘 할 일: "이 조직이 없어도 나에게 남는 역량"을 3가지 적어보세요.',
   },
@@ -128,8 +129,7 @@ function buildEmailHtml(name, typeCode, typeName, scores, avg) {
     <td style="padding:0 40px 24px;">
       <p style="margin:0 0 16px;font-size:11px;color:#A0A0A8;letter-spacing:2px;">구조 분석</p>
       <p style="margin:0 0 16px;font-size:14px;color:#555558;line-height:1.9;">
-        ${name}님,<br><br>
-        ${t.body}
+        ${name}님,<br><br>${t.body}
       </p>
     </td>
   </tr>
@@ -144,7 +144,7 @@ function buildEmailHtml(name, typeCode, typeName, scores, avg) {
     </td>
   </tr>
 
-  <!-- 마무리 메시지 -->
+  <!-- 마무리 -->
   <tr>
     <td style="padding:0 40px 32px;">
       <p style="margin:0;font-size:14px;color:#555558;line-height:1.9;">
@@ -158,9 +158,7 @@ function buildEmailHtml(name, typeCode, typeName, scores, avg) {
   <!-- CTA -->
   <tr>
     <td style="background:#F5F3EE;padding:28px 40px;text-align:center;border-top:1px solid #EBEBEB;">
-      <p style="margin:0 0 16px;font-size:13px;color:#555558;">
-        더 깊은 분석이 필요하신가요?
-      </p>
+      <p style="margin:0 0 16px;font-size:13px;color:#555558;">더 깊은 분석이 필요하신가요?</p>
       <a href="https://juhewow.gumroad.com/l/hsvdwi"
          style="display:inline-block;background:#0D0D0F;color:#FAFAF8;
                 padding:14px 32px;font-size:13px;text-decoration:none;letter-spacing:1px;">
@@ -187,52 +185,6 @@ function buildEmailHtml(name, typeCode, typeName, scores, avg) {
 </table>
 </body>
 </html>`;
-}
-
-/* ── SendGrid 발송 ── */
-async function sendEmail(to, name, typeCode, typeName, scores, avg) {
-  const html = buildEmailHtml(name, typeCode, typeName, scores, avg);
-  const t = TYPE_MESSAGES[typeCode] || TYPE_MESSAGES['F'];
-
-  const plainText = `[프리미너] ${name}님의 삶 구조 진단 결과
-
-유형: [${typeCode}] ${typeName}
-전체 평균: ${avg}점
-
-영역별 점수:
-${DOMAIN_LABELS.map((l, i) => `  ${l}: ${scores[i] || 0}점`).join('\n')}
-
-핵심 진단:
-${t.headline}
-
-${t.body}
-
-${t.action}
-
-삶은 노력이 아닌 구조로 바뀝니다. 3년이면 충분합니다.
-프리미너 FreeMeaner · Life Redesign Framework`;
-
-  const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.SENDGRID_API_KEY}`,
-    },
-    body: JSON.stringify({
-      personalizations: [{ to: [{ email: to, name }] }],
-      from: {
-        email: process.env.FROM_EMAIL,
-        name: process.env.FROM_NAME || '프리미너 FreeMeaner',
-      },
-      subject: `[프리미너] ${name}님의 삶 구조 진단 결과 — [${typeCode}] ${typeName}`,
-      content: [
-        { type: 'text/plain', value: plainText },
-        { type: 'text/html',  value: html },
-      ],
-    }),
-  });
-
-  return res.status;
 }
 
 /* ── 메인 핸들러 ── */
@@ -265,17 +217,47 @@ exports.handler = async (event) => {
     }
 
     const displayName = name || '익명';
-    const status = await sendEmail(email, displayName, typeCode, typeName, scores, avg);
+    const t = TYPE_MESSAGES[typeCode] || TYPE_MESSAGES['F'];
 
-    if (status >= 200 && status < 300) {
-      return {
-        statusCode: 200,
-        headers: { 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ success: true }),
-      };
-    } else {
-      throw new Error(`SendGrid error: ${status}`);
-    }
+    // Gmail SMTP 설정
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_PASS,
+      },
+    });
+
+    const plainText = `[프리미너] ${displayName}님의 삶 구조 진단 결과
+
+유형: [${typeCode}] ${typeName}
+전체 평균: ${avg}점
+
+영역별 점수:
+${DOMAIN_LABELS.map((l, i) => `  ${l}: ${scores[i] || 0}점`).join('\n')}
+
+핵심 진단: ${t.headline}
+
+${t.body}
+
+${t.action}
+
+삶은 노력이 아닌 구조로 바뀝니다. 3년이면 충분합니다.
+프리미너 FreeMeaner · Life Redesign Framework`;
+
+    await transporter.sendMail({
+      from: `"${process.env.FROM_NAME || '프리미너 FreeMeaner'}" <${process.env.GMAIL_USER}>`,
+      to: email,
+      subject: `[프리미너] ${displayName}님의 삶 구조 진단 결과 — [${typeCode}] ${typeName}`,
+      text: plainText,
+      html: buildEmailHtml(displayName, typeCode, typeName, scores, avg),
+    });
+
+    return {
+      statusCode: 200,
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ success: true }),
+    };
 
   } catch (err) {
     console.error('send-report error:', err);

@@ -1,12 +1,15 @@
 /**
  * 프리미너 무료 진단 결과 자동 발송
- * Netlify Function · send-report.js (Brevo 버전)
+ * Netlify Function · send-report.js (Brevo SMTP 버전)
  *
  * 필요한 환경변수:
- *   BREVO_API_KEY  — Brevo API 키
- *   FROM_EMAIL     — 발신 이메일 (Brevo에서 인증한 주소)
- *   FROM_NAME      — 발신자 이름 (프리미너 FreeMeaner)
+ *   BREVO_SMTP_USER  — Brevo SMTP 로그인 이메일 (예: a9dd0b001@smtp-brevo.com)
+ *   BREVO_SMTP_PASS  — Brevo SMTP 패스워드 (xsmtpsib-... 키)
+ *   FROM_EMAIL       — 발신 이메일 (Brevo에서 인증한 주소)
+ *   FROM_NAME        — 발신자 이름 (프리미너 FreeMeaner)
  */
+
+const nodemailer = require('nodemailer');
 
 const DOMAIN_LABELS = ['일 구조', '수입 구조', '건강 구조', '관계 구조', '의미 구조'];
 
@@ -172,36 +175,30 @@ ${t.action}
 삶은 노력이 아닌 구조로 바뀝니다. 3년이면 충분합니다.
 프리미너 FreeMeaner · Life Redesign Framework`;
 
-    // Brevo API 호출
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': process.env.BREVO_API_KEY,
+    // Brevo SMTP 전송
+    const transporter = nodemailer.createTransport({
+      host: 'smtp-relay.brevo.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.BREVO_SMTP_USER,  // a9dd0b001@smtp-brevo.com
+        pass: process.env.BREVO_SMTP_PASS,  // xsmtpsib-... 키
       },
-      body: JSON.stringify({
-        sender: {
-          name: process.env.FROM_NAME || '프리미너 FreeMeaner',
-          email: process.env.FROM_EMAIL,
-        },
-        to: [{ email, name: displayName }],
-        subject: `[프리미너] ${displayName}님의 삶 구조 진단 결과 — [${typeCode}] ${typeName}`,
-        textContent: plainText,
-        htmlContent: buildEmailHtml(displayName, typeCode, typeName, scores, avg),
-      }),
     });
 
-    if (res.ok) {
-      return {
-        statusCode: 200,
-        headers: { 'Access-Control-Allow-Origin': '*' },
-        body: JSON.stringify({ success: true }),
-      };
-    } else {
-      const err = await res.text();
-      console.error('Brevo error:', err);
-      throw new Error(`Brevo error: ${res.status}`);
-    }
+    await transporter.sendMail({
+      from: `"${process.env.FROM_NAME || '프리미너 FreeMeaner'}" <${process.env.FROM_EMAIL}>`,
+      to: `"${displayName}" <${email}>`,
+      subject: `[프리미너] ${displayName}님의 삶 구조 진단 결과 — [${typeCode}] ${typeName}`,
+      text: plainText,
+      html: buildEmailHtml(displayName, typeCode, typeName, scores, avg),
+    });
+
+    return {
+      statusCode: 200,
+      headers: { 'Access-Control-Allow-Origin': '*' },
+      body: JSON.stringify({ success: true }),
+    };
 
   } catch (err) {
     console.error('send-report error:', err);
